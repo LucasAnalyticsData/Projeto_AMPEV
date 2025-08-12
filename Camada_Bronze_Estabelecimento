@@ -1,0 +1,165 @@
+# 📦 Pipeline Bronze - Ingestão e Governança de Dados de Estabelecimentos (CSV ➝ Delta Lake)
+
+👨‍💻 **Autor:** Lucas Sousa Santos Oliveira  
+🎯 **Especialista em Finanças em transição para Engenharia de Dados** | Pós-graduação em Big Data e Cloud Computing
+
+---
+
+## 🎯 Objetivo do Projeto
+
+Este notebook implementa um **pipeline de ingestão robusto, escalável e idempotente** para carregar dados brutos de **estabelecimentos** (CSV) na **Camada Bronze** de um Data Lakehouse utilizando **Delta Lake** no Databricks.
+
+O foco é garantir:
+
+- ✅ **Qualidade na origem** com schema enforcement e tratamento de dados inválidos
+- 🔁 **Upsert eficiente** com `MERGE INTO` para cargas incrementais
+- 🧠 **Rastreabilidade total** com colunas de metadados
+- ⚙️ **Otimização de performance** com particionamento, `OPTIMIZE ZORDER` e `VACUUM`
+- 🛡 **Governança e confiabilidade** com registro no metastore
+
+---
+
+## 🧱 Arquitetura do Pipeline
+
+```mermaid
+flowchart TD
+    A[📄 CSV - Estabelecimentos] --> B[📥 Leitura com Schema Enforcement]
+    B --> C[🧹 Limpeza e Validação Inicial]
+    C --> D[🧠 Enriquecimento com data_ingestao]
+    D --> E[🧭 Reparticionamento Estratégico]
+    E --> F{Tabela Delta existe?}
+    F -- Sim --> G[🔁 MERGE INTO para UPSERT]
+    F -- Não --> H[🆕 Criação Inicial da Tabela Delta]
+    G & H --> I[🛡 Registro no Metastore]
+    I --> J[⚙️ OPTIMIZE ZORDER BY (EstabelecimentoID)]
+    J --> K[🧼 VACUUM 168 HOURS]
+```
+
+---
+
+## 📊 Técnicas e Boas Práticas Aplicadas
+
+| Técnica / Prática                       | Objetivo / Benefício |
+|-----------------------------------------|----------------------|
+| **Schema Enforcement (StructType)**    | Garante tipagem correta e evita inferência inconsistente |
+| **Tratamento de registros inválidos**   | Remove dados malformados prevenindo falhas no MERGE |
+| **Deduplicação e filtro de nulos**      | Assegura integridade da chave primária |
+| **Coluna `data_ingestao`**              | Rastreabilidade e suporte a Time Travel |
+| **Reparticionamento por chave**         | Melhora performance em escrita e consultas futuras |
+| **`CREATE TABLE IF NOT EXISTS`**        | Garante visibilidade no catálogo e previne erros |
+| **`MERGE INTO` (Upsert)**               | Atualiza e insere registros de forma incremental e ACID |
+| **`OPTIMIZE ZORDER`**                   | Melhora filtragem e leitura |
+| **`VACUUM`**                            | Reduz custo de armazenamento removendo arquivos obsoletos |
+
+---
+
+## 🛠 Fluxo Detalhado
+
+### 1️⃣ Leitura do CSV com Schema Enforcement
+
+```python
+from pyspark.sql.types import StructType, StructField, StringType
+
+schema = StructType([
+    StructField("Local", StringType(), True),
+    StructField("Email", StringType(), True),
+    StructField("EstabelecimentoID", StringType(), True),
+    StructField("Telefone", StringType(), True)
+])
+
+df_raw = (
+    spark.read.format("csv")
+    .option("header", "true")
+    .option("mode", "DROPMALFORMED")
+    .schema(schema)
+    .load("dbfs:/FileStore/Ampev/estabelecimentos.csv")
+)
+```
+
+📌 *Por que?* — Evita inferência automática e garante consistência entre execuções.
+
+---
+
+### 2️⃣ Limpeza e Validação
+
+```python
+df_clean = (
+    df_raw.dropDuplicates()
+          .na.drop()
+          .filter("EstabelecimentoID IS NOT NULL AND TRIM(EstabelecimentoID) != ''")
+)
+```
+
+📌 *Por que?* — Remove duplicatas, nulos e registros sem chave para evitar falhas no upsert.
+
+---
+
+### 3️⃣ Enriquecimento e Reparticionamento
+
+```python
+from pyspark.sql.functions import current_timestamp
+
+df_partitioned = (
+    df_clean.withColumn("data_ingestao", current_timestamp())
+            .repartition("EstabelecimentoID")
+)
+```
+
+📌 *Por que?* — Adiciona rastreabilidade e melhora performance de escrita.
+
+---
+
+### 4️⃣ Escrita com MERGE INTO
+
+```python
+from delta.tables import DeltaTable
+
+if DeltaTable.isDeltaTable(spark, "dbfs:/FileStore/Ampev/tables/bronze/estabelecimentos"):
+    delta_table = DeltaTable.forPath(spark, "dbfs:/FileStore/Ampev/tables/bronze/estabelecimentos")
+    (
+        delta_table.alias("tgt")
+        .merge(df_partitioned.alias("src"), "tgt.EstabelecimentoID = src.EstabelecimentoID")
+        .whenMatchedUpdateAll()
+        .whenNotMatchedInsertAll()
+        .execute()
+    )
+else:
+    df_partitioned.write.format("delta")         .partitionBy("data_ingestao")         .option("mergeSchema", "true")         .mode("overwrite")         .save("dbfs:/FileStore/Ampev/tables/bronze/estabelecimentos")
+```
+
+📌 *Por que?* — Garante ingestão incremental sem sobrescrever dados íntegros.
+
+---
+
+### 5️⃣ Otimização e Manutenção
+
+```sql
+OPTIMIZE bronze.estabelecimentos ZORDER BY (EstabelecimentoID);
+VACUUM bronze.estabelecimentos RETAIN 168 HOURS;
+```
+
+📌 *Por que?* — Compacta arquivos, melhora filtragem e libera espaço.
+
+---
+
+## ✅ Resultado Esperado
+
+| Métrica                     | Valor                          |
+|-----------------------------|--------------------------------|
+| 📌 Tabela Delta Criada       | `bronze.estabelecimentos`      |
+| 🔑 Chave de Negócio         | `EstabelecimentoID`            |
+| 🧾 Particionamento Físico   | `data_ingestao`                 |
+| ⚙️ Otimizações Aplicadas     | `OPTIMIZE ZORDER + VACUUM`     |
+| 🔁 Tipo de Ingestão         | `Batch` + `MERGE INTO`         |
+
+---
+
+## 🧠 Conclusão
+
+Este pipeline é **produção-ready** e incorpora princípios modernos de engenharia de dados:
+
+- 📊 Qualidade desde a origem
+- 🔁 Idempotência e resiliência
+- ⚡ Performance otimizada para custo e velocidade
+- 🛡 Governança e rastreabilidade completas
+- 🚀 Pronto para evolução futura com streaming, camada Silver e Gold
