@@ -1,9 +1,9 @@
-%md
+
 # 🚀 Projeto Completo de Engenharia de Dados: Do Bruto ao Insight Estratégico 📊✨
 
 ## Sumário
 1.  [Visão Geral do Projeto]
-2.  [Domínio Técnico e Senioridade]
+2.  [Aspecto Técnico do Projeto]
 3.  [Arquitetura do Pipeline de Dados]
     *   [Diagrama Completo do Pipeline de Dados]
 4.  [Detalhes dos Notebooks e sua Importância]
